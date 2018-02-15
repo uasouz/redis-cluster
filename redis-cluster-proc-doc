@@ -1,0 +1,156 @@
+Criação de cluster Redis:
+Antes de iniciar a configuração do cluster propriamente dito é necessária a criação de ums Storage Class no Cluster Kubernetes.
+Isso pode ser feito através do comando `kubectl create -f` especificando um arquivo com as configurações como descritas abaixo:
+
+/*
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  name: aws-ebs-sc
+provisioner: kubernetes.io/aws-ebs
+*/
+
+Exemplo: kubectl create -f aws-storage-class.yaml
+
+Feito isso pode ser configurada uma imagem de redis seguindo a seguinte configuração docker:
+
+/*
+FROM redis
+ENV DEBIAN_FRONTEND noninteractive
+RUN apt-get -y update \
+  && apt-get -y upgrade \
+  && apt-get -y --no-install-recommends install ruby wget \
+  && gem install redis -v 3.3.5 \
+  && apt-get -y autoremove \
+  && apt-get -y clean
+RUN wget -O /usr/local/bin/redis-trib http://download.redis.io/redis-stable/src/redis-trib.rb
+RUN chmod 755 /usr/local/bin/redis-trib
+CMD redis-server
+*/
+
+*No futuro podem ser feito ajustes para usar uma versão mais recente do Redis caso seja necessário.
+
+A imagem pode ser enviada/reenviada para o ECS na Amazon(ou outro registro de imagens docker) para ser usado pela kubernetes.
+
+Abaixo segue modelo de configuração yaml para o StatefulSet deste cluster
+/*
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cluster
+  labels:
+    app: redis-cluster
+data:
+  redis.conf: |+
+    cluster-enabled yes
+    cluster-require-full-coverage no
+    cluster-node-timeout 15000
+    cluster-config-file /data/nodes.conf
+    cluster-migration-barrier 1
+    appendonly yes
+    protected-mode no
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "false"
+  name: redis-cluster
+  labels:
+    app: redis-cluster
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: client
+  - port: 16379
+    targetPort: 16379
+    name: gossip
+  clusterIP: None
+  selector:
+    app: redis-cluster
+---
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  labels:
+    app: redis-cluster
+spec:
+  serviceName: redis-cluster
+  replicas: 6
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+    spec:
+      containers:
+      - name: redis-cluster
+        image: '957245124906.dkr.ecr.sa-east-1.amazonaws.com/redis-cluster:latest'
+        ports:
+        - containerPort: 6379
+          name: client
+        - containerPort: 16379
+          name: gossip
+        command: ["redis-server"]
+        args: ["/conf/redis.conf"]
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "redis-cli -h $(hostname) ping"
+          initialDelaySeconds: 15
+          timeoutSeconds: 5
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "redis-cli -h $(hostname) ping"
+          initialDelaySeconds: 20
+          periodSeconds: 3
+        volumeMounts:
+        - name: conf
+          mountPath: /conf
+          readOnly: false
+        - name: data
+          mountPath: /data
+          readOnly: false
+      volumes:
+      - name: conf
+        configMap:
+          name: redis-cluster
+          items: 
+          - key: redis.conf
+            path: redis.conf
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        name: redis-cluster
+      annotations:
+        volume.alpha.kubernetes.io/storage-class: anything
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+*/
+
+Como pode ser observado é criado um ConfigMap,um Service e um StatefulSet com VolumeClaim.
+Essa template pode ser aplicada com o comando `kubectl apply -f`. Ex: kubectl apply -f redis-cluster.yml
+
+Depois de executado esse comando, a Kubernetes deve criar 6 Pods do cluster de Redis,um de cada vez e para cada 1 deles um EBS de 1GB na Amazon.
+
+Depois que os 6 Pods(ou mais) estiverem criados devemos relacionar eles no formato master-slave em duplas.
+Para isso existem scripts já dentro dos containers que podem ser chamados da seguinte forma,por exemplo:
+
+kubectl exec -it redis-cluster-0 -- redis-trib create --replicas 1 \
+$(kubectl get pods -l app=redis-cluster -o jsonpath='{range.items[*]}{.status.podIP}:6379 ')
+
+
+Depois de aceita a configuração o cluster está pronto para uso e atende ao dns interno 'redis-cluster'
