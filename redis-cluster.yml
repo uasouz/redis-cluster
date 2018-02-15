@@ -51,7 +51,7 @@ spec:
     spec:
       containers:
       - name: redis-cluster
-        image: redis-cluster:v1
+        image: '957245124906.dkr.ecr.sa-east-1.amazonaws.com/redis-cluster:latest'
         ports:
         - containerPort: 6379
           name: client
@@ -100,4 +100,4 @@ spec:
       accessModes: [ "ReadWriteOnce" ]
       resources:
         requests:
-          storage: 100Mi
+          storage: 1Gi
