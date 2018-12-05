@@ -89,6 +89,8 @@ spec:
           items: 
           - key: redis.conf
             path: redis.conf
+        imagePullSecrets:
+          - name: ocir-secret
   volumeClaimTemplates:
   - metadata:
       name: data
