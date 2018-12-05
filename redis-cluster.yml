@@ -51,7 +51,7 @@ spec:
     spec:
       containers:
       - name: redis-cluster
-        image: '957245124906.dkr.ecr.sa-east-1.amazonaws.com/redis-cluster:latest'
+        image: 'fra.ocir.io/nucash/redis-cluster/redis-cluster:latest'
         ports:
         - containerPort: 6379
           name: client
